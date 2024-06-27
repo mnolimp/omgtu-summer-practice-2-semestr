@@ -32,21 +32,31 @@
 
 #!csharp
 
-//
-// Вычисление определенного интеграла
-//
+using System;
+using System.Threading;
+
 class DefiniteIntegral
 {
-    //
-    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
-    // function - функция, для которой вычисляется определнный интеграл
-    // step - размер одного шага разбиения
-    // threadsNumber - число потоков, которые используются для вычислений
-    //
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        int n = Convert.ToInt32((b - a) / step); // число шагов разбиения
+        double sum = 0;
+        Barrier barrier = new Barrier(threadsnumber);
+
+        Parallel.For(0, threadsnumber, (i) =>
+        {
+            double subSum = 0;
+            for (int j = i; j < n - 1; j += threadsnumber)
+            {
+                subSum += function(a + j * step) + function(a + (j + 1) * step);
+            }
+            subSum *= step / 2;
+            Interlocked.Exchange(ref sum, sum + subSum);
+
+            barrier.SignalAndWait();
+        });
+
+        return sum;
     }
 }
 
@@ -63,4 +73,4 @@ Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
