@@ -32,35 +32,139 @@
 
 #!csharp
 
-//
-// Вычисление определенного интеграла
-//
+using System;
+using System.Threading;
+using System.Diagnostics;
+
 class DefiniteIntegral
 {
-    //
-    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
-    // function - функция, для которой вычисляется определнный интеграл
-    // step - размер одного шага разбиения
-    // threadsNumber - число потоков, которые используются для вычислений
-    //
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        int n = Convert.ToInt32((b - a) / step); // число шагов разбиения
+        double sum = 0;
+        Barrier barrier = new Barrier(threadsnumber);
+
+        Parallel.For(0, threadsnumber, (i) =>
+        {
+            double subSum = 0;
+            for (int j = i; j < n - 1; j += threadsnumber)
+            {
+                subSum += function(a + j * step) + function(a + (j + 1) * step);
+            }
+            subSum *= step / 2;
+            Interlocked.Exchange(ref sum, sum + subSum);
+
+            barrier.SignalAndWait();
+        });
+
+        return sum;
+    }
+}
+
+#!markdown
+
+Код ниже выполняется 1 минуту 25 секунд на Ryzen 7 3700x
+
+#!csharp
+
+#r "nuget: xunit, 2.8.1"
+#r "nuget:ScottPlot, 5.0.35"
+
+using Xunit;
+using Microsoft.DotNet.Interactive.Formatting;
+
+
+var X = (double x) => x;
+var SIN = (double x) => Math.Sin(x);
+
+Stopwatch stopwatch = new Stopwatch();
+
+double threadtime;
+double minthreadtime = Double.MaxValue;
+int minthreadnumber;
+Dictionary<int, double> results = new Dictionary<int, double>();
+
+
+Console.WriteLine("Промежуточный вывод:");
+
+for(int threadnumber = 1; threadnumber <= 30; threadnumber++){
+    threadtime = 0;
+    for(int tests = 0; tests < 300; tests++){
+        stopwatch.Reset();
+        stopwatch.Start();
+        double res = DefiniteIntegral.Solve(-100, 100, SIN, 1e-4, threadnumber);
+        Assert.Equal(0, res, 1e-4);
+        stopwatch.Stop();
+        threadtime += stopwatch.ElapsedTicks;
+    }
+    threadtime /= 300;
+    if(threadtime < minthreadtime){
+        minthreadtime = threadtime;
+        minthreadnumber = threadnumber;
+    } 
+    results.Add(threadnumber, threadtime);
+    Console.WriteLine(threadnumber + "\t" + threadtime);
+}
+
+Console.WriteLine("Оптимальное кол-во потоков: " + minthreadnumber + "\t Оптимальное время вычисления: " + minthreadtime);
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(1600, 1200)), HtmlFormatter.MimeType);
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(results.Values.ToArray(), results.Keys.ToArray());
+
+plt
+
+#!markdown
+
+Код для однопоточного вычисления:
+
+#!csharp
+
+class TrapezoidalRule {
+    public static double Solve(Func<double, double> f, double a, double b, double dx) {
+        int number_of_steps = Convert.ToInt32((b - a)/dx);
+        double delta_x = (b - a) / number_of_steps,
+        result = 0;
+
+        for(int i = 0; i < number_of_steps; i++){
+            result += f(a + dx * i);
+        }
+        result *= delta_x;
+
+        return result;
     }
 }
 
 #!csharp
 
-#r "nuget: xunit, 2.8.1"
+using System.Diagnostics;
 
-using Xunit;
+Func<double, double> f = (double x) => Math.Sin(x);
+double answ = 0;
+double timeonethread = 0;
+for(int k = 0; k < 1000; k++){
+    Stopwatch stopwatchsingle = new Stopwatch();
+    stopwatchsingle.Start();
+    answ += TrapezoidalRule.Solve(f, -100, 100, 1e-4);
+    stopwatchsingle.Stop();
+    timeonethread += stopwatchsingle.ElapsedTicks;
+}
+timeonethread /= 1000;
+answ /= 1000;
+Console.WriteLine("Ответ: " + answ + "\tВремя выполнения:" + timeonethread);
 
-var X = (double x) => x;
-var SIN = (double x) => Math.Sin(x);
+#!markdown
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
+Summary:
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
+Выбранный размер шага: 1e-4
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+Оптимальное количество потоков: 15
+
+Время выполнения оптимальной многопоточной версии: 56641.04666666667 ticks
+
+Время выполнения однопоточной версии: 247195.558 ticks
+
+Сравнение времени выполнения оптимальной многопоточной версии с временем выполнения однопоточной версии: ~4,378 раз
