@@ -15,13 +15,6 @@
 ## Задание.
 Пусть операция задана интерфейсом
 
-#!csharp
-
-public interface ICommand
-{
-    void Execute();
-}
-
 #!markdown
 
 Классы, наследующие интерйес ICommand будем называть **Командами.**
@@ -38,3 +31,149 @@ ServerThread может менять свое поведение для обра
 Отсутствие Команд в очереди потока не должно требовать значительных затрат процессорного времени. Значительными считаются затраты, которые зависят от времени простоя потока.
 
 Написать проверку, которая гарантирует правильное выполнение команд HardStop и SoftStop.
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+public static bool isSoftStopRequested = false;
+
+#!csharp
+
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
+public class HardStop : ICommand
+{
+    private Thread stoppingThread;
+
+    public HardStop(Thread stoppingThread)
+    {
+        this.stoppingThread = stoppingThread;
+    }
+
+    public void Execute()
+    {
+        if (stoppingThread != Thread.CurrentThread)
+        {
+            throw new Exception("HardStop cannot be executed in non-target thread");
+        }
+        stoppingThread.Interrupt();
+    }
+}
+
+#!csharp
+
+public class SoftStop : ICommand
+{
+    private BlockingCollection<ICommand> commandQueue;
+    private Thread stoppingThread;
+
+    public SoftStop(BlockingCollection<ICommand> commandQueue, Thread stoppingThread)
+    {
+        this.commandQueue = commandQueue;
+        this.stoppingThread = stoppingThread;
+    }
+
+    public void Execute()
+    {
+        if (stoppingThread != Thread.CurrentThread)
+        {
+            throw new Exception("SoftStop cannot be executed in non-target thread");
+        }
+
+        if(isSoftStopRequested){
+        while (commandQueue.Count > 0)
+            {
+                ICommand command = commandQueue.Take();
+                command.Execute();
+            }
+        }
+    }
+}
+
+#!csharp
+
+public static class ExceptionHandler
+{
+    public static void Handle(Exception exception, ICommand command){
+        Console.WriteLine("Exception " + exception + " caught while trying to execute next command: " + command.GetType().Name);
+    }
+}
+
+#!csharp
+
+public class ServerThread
+{
+    public BlockingCollection<ICommand> commandQueue = new BlockingCollection<ICommand>();
+
+    public Thread mainThread;
+
+    public ServerThread()
+    {
+        mainThread = new Thread(Run);
+
+        mainThread.Start();
+    }
+
+    public void Run()
+    {
+
+        while ((commandQueue.Count > 0) && (!isSoftStopRequested))
+        {
+            ICommand command = commandQueue.Take();
+            try
+            {
+                if(command is SoftStop) isSoftStopRequested = true;
+                command.Execute();
+            }
+            catch (Exception exception)
+            {
+                ExceptionHandler.Handle(exception, command);
+            }
+        }
+    }
+
+    public void AddCommand(ICommand command)
+    {
+        commandQueue.Add(command);
+    }
+}
+
+#!csharp
+
+public class TestCommand : ICommand
+{
+    public void Execute()
+    {
+        Console.WriteLine("Server is doing smth...");
+    }
+}
+
+#!csharp
+
+ServerThread serverThread = new ServerThread();
+
+serverThread.AddCommand(new TestCommand());
+serverThread.AddCommand(new TestCommand());
+//Thread.Sleep(10);
+/*try
+{
+    serverThread.AddCommand(new HardStop(serverThread.mainThread));
+}
+catch(Exception exception)
+{
+    Console.WriteLine(exception.Message);
+}*/
+
+serverThread.AddCommand(new SoftStop(serverThread.commandQueue, serverThread.mainThread));
+
+serverThread.AddCommand(new TestCommand());
+
+serverThread.mainThread.Join();
