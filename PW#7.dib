@@ -130,14 +130,19 @@ public class ServerThread
             ICommand command = commandQueue.Take();
             try
             {
-                if(command is SoftStop) isSoftStopRequested = true;
+                if(command is SoftStop){
+                     isSoftStopRequested = true;
+                     break;
+                } else if (command is HardStop) break;
                 command.Execute();
+                
             }
             catch (Exception exception)
             {
                 ExceptionHandler.Handle(exception, command);
             }
         }
+        
     }
 
     public void AddCommand(ICommand command)
@@ -162,17 +167,17 @@ ServerThread serverThread = new ServerThread();
 
 serverThread.AddCommand(new TestCommand());
 serverThread.AddCommand(new TestCommand());
-//Thread.Sleep(10);
-/*try
+
+try
 {
     serverThread.AddCommand(new HardStop(serverThread.mainThread));
 }
 catch(Exception exception)
 {
     Console.WriteLine(exception.Message);
-}*/
+}
 
-serverThread.AddCommand(new SoftStop(serverThread.commandQueue, serverThread.mainThread));
+//serverThread.AddCommand(new SoftStop(serverThread.commandQueue, serverThread.mainThread));
 
 serverThread.AddCommand(new TestCommand());
 
