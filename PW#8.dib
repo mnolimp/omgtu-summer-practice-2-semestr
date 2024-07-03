@@ -33,15 +33,6 @@
 Чтобы избежать мертвой блокировки потока, необходимо ввести понятие Планировщика, который будет отвечать за выбор следующей длительной задачи для выполнения,
 а чтение из очереди оставить только для новых операций. 
 
-#!csharp
-
-public interface IScheduler
-{
-    bool HasCommand()
-    ICommand Select();
-    void Add(ICommand cmd);
-}
-
 #!markdown
 
 Необходимо реализовать поток, который способен реализоввывать длительные операции.
@@ -55,3 +46,217 @@ public interface IScheduler
 Необходимо учесть этот момент при реализации очереди.
 
 2. Для обепечения справедливости стратегии планировщика в слабом смысле использовать стратегию Round Robbin (циклическую) для определения следующего потока на исполнение.
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+public static bool isSoftStopRequested = false;
+
+#!csharp
+
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
+public class HardStop : ICommand
+{
+    private Thread stoppingThread;
+
+    public HardStop(Thread stoppingThread)
+    {
+        this.stoppingThread = stoppingThread;
+    }
+
+    public void Execute()
+    {
+        if (stoppingThread != Thread.CurrentThread)
+        {
+            throw new Exception("HardStop cannot be executed in non-target thread");
+        }
+        stoppingThread.Interrupt();
+    }
+}
+
+#!csharp
+
+public class SoftStop : ICommand
+{
+    private BlockingCollection<ICommand> commandQueue;
+    private Thread stoppingThread;
+
+    public SoftStop(BlockingCollection<ICommand> commandQueue, Thread stoppingThread)
+    {
+        this.commandQueue = commandQueue;
+        this.stoppingThread = stoppingThread;
+    }
+
+    public void Execute()
+    {
+        if (stoppingThread != Thread.CurrentThread)
+        {
+            throw new Exception("SoftStop cannot be executed in non-target thread");
+        }
+
+        if(isSoftStopRequested){
+        while (commandQueue.Count > 0)
+            {
+                ICommand command = commandQueue.Take();
+                command.Execute();
+            }
+        }
+    }
+}
+
+#!csharp
+
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+public class Scheduler : IScheduler
+{
+    public BlockingCollection<ICommand> longCommandQueue = new BlockingCollection<ICommand>();
+    
+    public bool HasCommand(){
+        if(longCommandQueue.Count > 0) return true;
+        else return false;
+    }
+
+    public ICommand Select()
+    {
+        return longCommandQueue.Take();
+    }
+
+    public void Add(ICommand command){
+        longCommandQueue.Add(command);
+    }
+
+    public void ExecuteLongCommand(BlockingCollection<ICommand> longCommandQueue){
+        while(HasCommand())
+        {
+            Select().Execute();
+        }
+    }
+}
+
+#!csharp
+
+public static class ExceptionHandler
+{
+    public static void Handle(Exception exception, ICommand command){
+        Console.WriteLine("Exception " + exception + " caught while trying to execute next command: " + command.GetType().Name);
+    }
+}
+
+#!csharp
+
+public class ServerThread
+{
+    public BlockingCollection<ICommand> commandQueue = new BlockingCollection<ICommand>();
+
+    public Thread mainThread;
+
+    public Scheduler scheduler = new Scheduler();
+
+    public ServerThread()
+    {
+        mainThread = new Thread(Run);
+
+        mainThread.Start();
+    }
+
+    public void Run()
+    {
+
+        while ((commandQueue.Count > 0) && (!isSoftStopRequested))
+        {
+            ICommand command = commandQueue.Take();
+            try
+            {
+                if(command is SoftStop){
+                     isSoftStopRequested = true;
+                     break;
+                } else if (command is HardStop) break;
+                command.Execute();
+                
+            }
+            catch (Exception exception)
+            {
+                ExceptionHandler.Handle(exception, command);
+            }
+        }
+
+        while (scheduler.HasCommand())
+        {
+            ICommand nextCommand = scheduler.Select();
+            try
+            {
+                nextCommand.Execute();
+            }
+            catch (Exception exception)
+            {
+                ExceptionHandler.Handle(exception, nextCommand);
+            }
+        }
+    }
+
+    public void AddCommand(ICommand command)
+    {
+        commandQueue.Add(command);
+    }
+}
+
+#!csharp
+
+public class TestCommand : ICommand
+{
+    public void Execute()
+    {
+        Console.WriteLine("Server is doing smth...");
+    }
+}
+
+#!csharp
+
+public class LongTestCommand : ICommand
+{
+    public void Execute()
+    {
+        Console.WriteLine("Server is doing smth long...");
+        Thread.Sleep(2000);
+    }
+}
+
+#!csharp
+
+ServerThread serverThread = new ServerThread();
+
+serverThread.AddCommand(new TestCommand());
+serverThread.AddCommand(new TestCommand());
+serverThread.AddCommand(new LongTestCommand());
+
+try
+{
+    serverThread.AddCommand(new HardStop(serverThread.mainThread));
+}
+catch(Exception exception)
+{
+    Console.WriteLine(exception.Message);
+}
+
+//serverThread.AddCommand(new SoftStop(serverThread.commandQueue, serverThread.mainThread));
+
+serverThread.AddCommand(new TestCommand());
+
+serverThread.mainThread.Join();
