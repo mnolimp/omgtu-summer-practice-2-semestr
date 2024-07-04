@@ -141,13 +141,6 @@ public class Scheduler : IScheduler
     public void Add(ICommand command){
         longCommandQueue.Add(command);
     }
-
-    public void ExecuteLongCommand(BlockingCollection<ICommand> longCommandQueue){
-        while(HasCommand())
-        {
-            Select().Execute();
-        }
-    }
 }
 
 #!csharp
@@ -231,10 +224,26 @@ public class TestCommand : ICommand
 
 public class LongTestCommand : ICommand
 {
+    public ServerThread serverThread;
+    public int numberOfExecutions = 0, maxNumberOfExecutions;
+
+    public LongTestCommand(ServerThread serverThread, int maxNumberOfExecutions)
+    {
+        this.serverThread = serverThread;
+        this.maxNumberOfExecutions = maxNumberOfExecutions;
+    }
+
     public void Execute()
     {
+        if(numberOfExecutions >= maxNumberOfExecutions)
+        {
+            return;
+        }
+
         Console.WriteLine("Server is doing smth long...");
-        Thread.Sleep(2000);
+        Thread.Sleep(1000);
+        serverThread.scheduler.Add(this);
+        numberOfExecutions++;
     }
 }
 
@@ -244,7 +253,7 @@ ServerThread serverThread = new ServerThread();
 
 serverThread.AddCommand(new TestCommand());
 serverThread.AddCommand(new TestCommand());
-serverThread.AddCommand(new LongTestCommand());
+serverThread.AddCommand(new LongTestCommand(serverThread, 5));
 
 try
 {
