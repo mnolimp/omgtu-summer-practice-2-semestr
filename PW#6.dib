@@ -1,0 +1,201 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №6. Изучение производительности потоко-безопасных очередей.
+
+**Цель:** Определить лучшую потоко-безопасную коллекцию для выполнения интенсивной обработки входящих сообщений.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Назвать оптимальную коллекцию для обработки большого количества сообщений.
+2. Изучите примтив синхронизации Условная переманная.
+
+
+**Материалы для самостоятельного изучения**.
+1. [Потоко-безопасные коллекции](https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/)
+2. Условные переменные Глава 5 п.5.1. книги Г. Эндрюс Основы многопоточного, параллельного и распределенного программирования
+3. [Одна из реализаций условных переменных на .Net](https://learn.microsoft.com/ru-ru/dotnet/api/system.threading.manualresetevent?view=net-8.0)
+
+## Задание.
+Исследовать производительность BlockingCollection и ConcurrentQueue в сравнении с непотокобезопасной очередью.
+
+Для каждой потоко-безопасной очереди необходимо реализовать 2 потока: один записывает объект в очередь, а другой - читает объект из очереди.
+Для непотокобезопасной очереди реализовать два цикла - записи миллиона объектов в очередь и чтение миллиона объектов из очереди.
+
+Необходимо определить два промежутка времени:
+- время за которое поток или цикл обработает миллион объектов
+- время, необходимое на запись и чтение миллиона объектов из очреди.
+
+Сделать десять замеров по каждой коллекции. Все замеры показать на графике.
+
+Записать в ноутбуке вывод - какая и потоко-безопасных коллекций эффективнее. И выразить в процентах - скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очредью.
+
+**Указание**.
+1. Необходимо исключить из замеров время, необходимое для запуска и остановки потоков, то есть посчитать чистое время, необходимое для обработки объектов.
+Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
+2. Для итогового вывода сравнивать усредненные значения.
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.35"
+
+using System;
+using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(600, 800)), HtmlFormatter.MimeType);
+
+#!csharp
+
+Stopwatch stopwatchNonSafe = new Stopwatch();
+List<long> nonSafeTicks = new List<long>();
+
+for(int j = 0; j < 10; j++){
+    Queue<int> nonThreadSafeQueue = new Queue<int>();
+    stopwatchNonSafe.Reset();
+    stopwatchNonSafe.Start();
+    for(int i = 0; i < 1000000; i++){
+        nonThreadSafeQueue.Enqueue(i);
+    }
+
+    while(nonThreadSafeQueue.Count > 0){
+        nonThreadSafeQueue.Dequeue();
+    }
+
+    stopwatchNonSafe.Stop();
+    nonSafeTicks.Add(stopwatchNonSafe.ElapsedTicks);
+}
+
+Console.WriteLine(nonSafeTicks.Average() + " " + nonSafeTicks.Min());
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(Enumerable.Range(1, 10).ToArray(), nonSafeTicks.ToArray());
+
+plt
+
+#!csharp
+
+Stopwatch concurrentStopWatch = new Stopwatch();
+ManualResetEvent eventConcurrentHandler = new ManualResetEvent(false);
+List<long> concurrentTicks = new List<long>();
+
+for(int k = 0; k < 10; k++){
+    ConcurrentQueue<int> concurrentQ = new ConcurrentQueue<int>();
+    var threadConcurrentWrite = new Thread(()=>
+    {
+        eventConcurrentHandler.WaitOne();
+        concurrentStopWatch.Start();
+        for(int i = 0; i < 1000000; i++){
+            concurrentQ.Enqueue(i);
+        }
+    });
+
+    var threadConcurrentRead = new Thread(()=>
+    {
+        eventConcurrentHandler.Set();
+        int deleted;
+        while(concurrentQ.TryDequeue(out deleted)){
+
+        }
+        concurrentStopWatch.Stop();
+    });
+
+    threadConcurrentWrite.Start();
+    threadConcurrentRead.Start();
+    threadConcurrentWrite.Join();
+    threadConcurrentRead.Join();
+
+    concurrentTicks.Add(concurrentStopWatch.ElapsedTicks);
+    concurrentStopWatch.Reset();
+    eventConcurrentHandler.Reset();
+}
+
+Console.WriteLine(concurrentTicks.Average() + " " + concurrentTicks.Min());
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(Enumerable.Range(1, 10).ToArray(), concurrentTicks.ToArray());
+
+plt
+
+#!csharp
+
+Stopwatch blockingStopWatch = new Stopwatch();
+ManualResetEvent eventBlockingHandler = new ManualResetEvent(false);
+List<long> blockingTicks = new List<long>();
+
+for(int k = 0; k < 10; k++){
+    BlockingCollection<int> blockC = new BlockingCollection<int>();
+    var threadBlockWrite = new Thread(() =>
+    {
+        eventBlockingHandler.WaitOne();
+        blockingStopWatch.Start();
+        for (int i = 0; i < 1000000; i++)
+        {
+            blockC.Add(i);
+        }
+        blockC.CompleteAdding();
+    });
+
+    var threadBlockRead = new Thread(() =>
+    {
+        eventBlockingHandler.Set();
+        foreach (var item in blockC.GetConsumingEnumerable())
+        {
+
+        }
+        blockingStopWatch.Stop();
+    });
+
+    threadBlockWrite.Start();
+    threadBlockRead.Start();
+    threadBlockWrite.Join();
+    threadBlockRead.Join();
+
+    blockingTicks.Add(blockingStopWatch.ElapsedTicks);
+    blockingStopWatch.Reset();
+    eventBlockingHandler.Reset();
+}
+
+Console.WriteLine(blockingTicks.Average() + " " + blockingTicks.Min());
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(Enumerable.Range(1, 10).ToArray(),blockingTicks.ToArray());
+
+plt
+
+#!markdown
+
+## Вывод
+
+#!markdown
+
+Непотокобезопасная очередь:
+
+Средние тики: 281833.4
+
+Минимальные тики: 217198
+
+ConcurrentQueue:
+
+Средние тики: 229194.3 
+
+Минимальные тики: 163465
+
+BlockingCollection:
+
+Средние тики: 4105916.5 
+
+Минимальные тики: 3404861
+
+Можно сделать вывод, что по средним и минимальным тикам эффективнейшей очередью является ConcurrentQueue. 
+
+Эффективность ConcurrentQueue относительно непотокобезопасной очереди(считается относительно средних тиков): ~22.967%
+
+Все замеры производились 10 раз.
