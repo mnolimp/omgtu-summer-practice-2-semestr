@@ -36,3 +36,305 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+public static bool isSoftStopRequested = false;
+
+#!csharp
+
+public interface ICommand
+{
+    void Execute();
+    public int id {get;}
+}
+
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+public class HardStop : ICommand
+{
+    private Thread stoppingThread;
+
+    public int id {get;}
+
+    public HardStop(Thread stoppingThread)
+    {
+        this.stoppingThread = stoppingThread;
+    }
+
+    public void Execute()
+    {
+        if (stoppingThread != Thread.CurrentThread)
+        {
+            throw new Exception("HardStop cannot be executed in non-target thread");
+        }
+        stoppingThread.Interrupt();
+    }
+}
+
+public class SoftStop : ICommand
+{
+    private BlockingCollection<ICommand> commandQueue;
+    private Thread stoppingThread;
+
+    public int id {get;}
+
+    public SoftStop(BlockingCollection<ICommand> commandQueue, Thread stoppingThread)
+    {
+        this.commandQueue = commandQueue;
+        this.stoppingThread = stoppingThread;
+    }
+
+    public void Execute()
+    {
+        if (stoppingThread != Thread.CurrentThread)
+        {
+            throw new Exception("SoftStop cannot be executed in non-target thread");
+        }
+
+        if(isSoftStopRequested){
+        while (commandQueue.Count > 0)
+            {
+                ICommand command = commandQueue.Take();
+                command.Execute();
+            }
+        }
+    }
+}
+
+public class Scheduler : IScheduler
+{
+    public BlockingCollection<ICommand> longCommandQueue = new BlockingCollection<ICommand>();
+    
+    public bool HasCommand(){
+        if(longCommandQueue.Count > 0) return true;
+        else return false;
+    }
+
+    public ICommand Select()
+    {
+        return longCommandQueue.Take();
+    }
+
+    public void Add(ICommand command){
+        longCommandQueue.Add(command);
+    }
+}
+
+public static class ExceptionHandler
+{
+    public static void Handle(Exception exception, ICommand command){
+        Console.WriteLine("Exception " + exception + " caught while trying to execute next command: " + command.GetType().Name);
+    }
+}
+
+public class Message
+{
+    public int commandID;
+    public string messageText;
+
+    public Message(int commandID, string messageText)
+    {
+        this.commandID = commandID;
+        this.messageText = messageText;
+    }
+}
+
+public class Router : ICommand
+{
+    public Queue<Message> messageQueue = new Queue<Message>();
+    public Dictionary<int, LongCommand> commands = new Dictionary<int, LongCommand>();
+
+    public int id {get;}
+
+    public void Execute()
+    {
+    while(messageQueue.Count > 0){
+        Message message = messageQueue.Dequeue();
+        if (commands.ContainsKey(message.commandID))
+            {
+                commands[message.commandID].AddMessage(message);
+                Console.WriteLine("Message routed to Command " + message.commandID + " queue: " + message.messageText);
+            }
+            else
+            {
+                Console.WriteLine("Error: Command " + message.commandID + " not found");
+            }
+        }
+    }
+
+    public void DeleteCommand(int commandID)
+    {
+        if(commands[commandID].isComplited)
+        {
+            lock(commands)
+            {
+                commands.Remove(commandID);
+            }
+        }
+    }
+    
+    public void AddCommand(int id, LongCommand command)
+    {
+        commands.Add(id, command);
+    }
+
+    public void AddMessage(Message message)
+    {
+        messageQueue.Enqueue(message);
+    }
+}
+
+public class ServerThread
+{
+    public BlockingCollection<ICommand> commandQueue = new BlockingCollection<ICommand>();
+
+    public Thread mainThread;
+
+    public Scheduler scheduler = new Scheduler();
+
+    public Router router;
+
+    public ServerThread(Router router)
+    {
+        this.router = router;
+
+        mainThread = new Thread(Run);
+
+        mainThread.Start();
+    }
+
+    public void Run()
+    {
+        while ((commandQueue.Count > 0) && (!isSoftStopRequested))
+        {
+            ICommand command = commandQueue.Take();
+            try
+            {
+                if(command is SoftStop){
+                     isSoftStopRequested = true;
+                     break;
+                } else if (command is HardStop) break;
+                command.Execute();
+                
+            }
+            catch (Exception exception)
+            {
+                ExceptionHandler.Handle(exception, command);
+            }
+        }
+        
+        while (scheduler.HasCommand())
+        {
+            router.Execute();
+            ICommand nextCommand = scheduler.Select();
+            try
+            {
+                nextCommand.Execute();
+            }
+            catch (Exception exception)
+            {
+                ExceptionHandler.Handle(exception, nextCommand);
+            }
+        }
+    }
+
+    public void AddCommand(ICommand command)
+    {
+        commandQueue.Add(command);
+    }
+}
+
+public class NewTestCommand(int id) : ICommand
+{
+    int counter = 0;
+    public int id {get;} = id;
+
+    public void Execute()
+    {
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+    }
+}
+
+public class LongCommand : ICommand
+{
+    public ServerThread serverThread;
+    public int numberOfExecutions = 0, maxNumberOfExecutions;
+    public ICommand command;
+    public int id {get; init; }
+    public Queue<Message> messages = new Queue<Message>();
+    public bool isComplited = false;
+
+    public LongCommand(ServerThread serverThread, int maxNumberOfExecutions, ICommand command)
+    {
+        this.serverThread = serverThread;
+        this.maxNumberOfExecutions = maxNumberOfExecutions;
+        this.command = command;
+        id = command.id;
+    }
+
+
+    public void Execute()
+    {
+        if(numberOfExecutions == maxNumberOfExecutions)
+        {
+            isComplited = true;
+            return;
+        }
+        command.Execute();
+        serverThread.scheduler.Add(this);
+        numberOfExecutions++;
+
+        ShowMessages();
+    }
+
+    public void ShowMessages()
+    {
+        while(messages.Count > 0){
+            Message shownMessage = messages.Dequeue();
+            Console.WriteLine("Command " + shownMessage.commandID + " has recieved message: " + shownMessage.messageText);
+        }
+    }
+
+    public void AddMessage(Message message)
+    {
+        messages.Enqueue(message);
+    }
+}
+
+#!csharp
+
+Router router = new Router();
+ServerThread serverThread = new ServerThread(router);
+
+for(int i = 1; i < 6; i++){
+    var command = new LongCommand(serverThread, 3, new NewTestCommand(i));
+    serverThread.AddCommand(command);
+    router.AddCommand(i, command);
+}
+
+router.AddMessage(new Message(1, "Message for Command 1"));
+router.AddMessage(new Message(2, "Message for Command 2"));
+router.AddMessage(new Message(600, "Message for Command 600"));
+
+try
+{
+    serverThread.AddCommand(new HardStop(serverThread.mainThread));
+}
+catch(Exception exception)
+{
+    Console.WriteLine(exception.Message);
+}
+
+serverThread.mainThread.Join();
